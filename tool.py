@@ -3,8 +3,8 @@ nest_asyncio.apply()
 
 import os
 from dotenv import load_dotenv
-from serpapi import GoogleSearch
 
+# LangChain and Google/Serper specific imports
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import PromptTemplate
 from langchain.chains.llm import LLMChain
@@ -12,9 +12,11 @@ from langchain.chains.retrieval_qa.base import RetrievalQA
 from langchain_community.vectorstores import Chroma
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain.schema.document import Document
+from langchain_community.utilities import GoogleSerperAPIWrapper
 
 load_dotenv()
 
+# API Key loading and validation
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 
@@ -23,12 +25,12 @@ if not GOOGLE_API_KEY:
 if not SERPER_API_KEY:
     raise ValueError("FATAL ERROR: SERPER_API_KEY not found in .env file.")
 
+# Initialize LLM and Embeddings
 try:
     llm = ChatGoogleGenerativeAI(
         model="gemini-1.5-pro",
         google_api_key=GOOGLE_API_KEY,
-        temperature=0.7,
-        convert_system_message_to_human=True
+        temperature=0.7
     )
 
     embeddings = GoogleGenerativeAIEmbeddings(
@@ -119,26 +121,30 @@ def get_personalized_news(profile_summary: str, target_language: str) -> list[di
     all_articles = []
     seen_urls = set()
 
+    try:
+        search = GoogleSerperAPIWrapper(tbm="nws", serper_api_key=SERPER_API_KEY, num=5)
+    except Exception as e:
+        print(f"Failed to initialize GoogleSerperAPIWrapper: {e}")
+        return []
+
     for query in queries[:4]:
         print(f"Searching for news with query: '{query}'")
-        params = {
-            "api_key": SERPER_API_KEY,
-            "q": query,
-            "tbm": "nws",
-            "num": 5
-        }
         try:
-            search = GoogleSearch(params)
-            results = search.get_dict()
-            print("Serper API Response:", results)
+            results = search.results(query)
+            # The print statement below is for debugging and can be removed later
+            # print("Serper API Response:", results)
 
-            if "news_results" in results and results["news_results"]:
-                for article in results["news_results"]:
+            # FIXED: Serper News API uses the "news" key, not "news_results".
+            if "news" in results and results["news"]:
+                for article in results["news"]:
                     if article.get("link") and article["link"] not in seen_urls:
                         all_articles.append(article)
                         seen_urls.add(article["link"])
+            else:
+                print(f"No news found in API response for query: '{query}'")
+
         except Exception as e:
-            print(f"Error fetching news for query '{query}': {e}")
+            print(f"Error fetching or parsing news for query '{query}': {e}")
             continue
 
     if not all_articles:
@@ -160,7 +166,8 @@ def get_personalized_news(profile_summary: str, target_language: str) -> list[di
     )
     summarization_chain = LLMChain(llm=llm, prompt=summarization_prompt)
 
-    for article in all_articles:
+    # Process up to 4 unique articles
+    for article in all_articles[:4]:
         description = article.get("snippet", article.get("title", ""))
 
         if not description or description.strip() == "" or "[Removed]" in description:
@@ -174,8 +181,6 @@ def get_personalized_news(profile_summary: str, target_language: str) -> list[di
             "summary": summary,
             "snippet": description
         })
-        if len(news_items) >= 4:
-            break
 
     return news_items
 
