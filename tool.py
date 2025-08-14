@@ -7,12 +7,13 @@ from dotenv import load_dotenv
 # LangChain and Google/Serper specific imports
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import PromptTemplate
-from langchain.chains.llm import LLMChain
 from langchain.chains.retrieval_qa.base import RetrievalQA
 from langchain_community.vectorstores import Chroma
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain.schema.document import Document
 from langchain_community.utilities import GoogleSerperAPIWrapper
+import re
+import json
 
 load_dotenv()
 
@@ -50,28 +51,39 @@ def generate_probing_questions(interest_text: str) -> list[str]:
         - Preferred regions or markets (e.g., US, Europe, Asia).
         - Types of news (e.g., product launches, financial results, policy changes).
 
-        Return the questions as a Python list of strings. For example:
+        Return ONLY a JSON array of strings. For example:
         ["What specific companies are you interested in?", "Are you focused on consumer products or enterprise solutions?"]
+
+        Do not include any other text or explanation.
 
         QUESTIONS:
         """
     )
-    chain = LLMChain(llm=llm, prompt=prompt)
-    response = chain.run(interest_text)
-
+    
     try:
-        questions = eval(response)
-        if isinstance(questions, list):
-            return questions
-    except:
-        return ["Could you be more specific about the topics?",
-                "Are there any particular companies or people to follow?",
-                "Which regions are you most interested in?"]
-    return []
+        # Use invoke instead of run
+        response = llm.invoke(prompt.format(interest_text=interest_text))
+        response_text = response.content if hasattr(response, 'content') else str(response)
+        
+        # Try to extract JSON array from response
+        json_match = re.search(r'\[.*?\]', response_text, re.DOTALL)
+        if json_match:
+            questions = json.loads(json_match.group())
+            if isinstance(questions, list) and all(isinstance(q, str) for q in questions):
+                return questions
+    except Exception as e:
+        print(f"Error generating probing questions: {e}")
+    
+    # Fallback questions if parsing fails
+    return [
+        "Could you be more specific about the topics?",
+        "Are there any particular companies or people to follow?",
+        "Which regions are you most interested in?"
+    ]
 
 
 def summarize_user_profile(initial_interest: str, answers: dict) -> str:
-    answers_str = "\n".join([f"- {q}: {a}" for q, a in answers.items()])
+    answers_str = "\n".join([f"- {q}: {a}" for q, a in answers.items() if a and a.strip()])
     prompt = PromptTemplate(
         input_variables=["initial_interest", "answers_str"],
         template="""Create a concise, one-paragraph summary of a user's news preferences.
@@ -88,9 +100,15 @@ def summarize_user_profile(initial_interest: str, answers: dict) -> str:
         PROFILE SUMMARY:
         """
     )
-    chain = LLMChain(llm=llm, prompt=prompt)
-    summary = chain.run(initial_interest=initial_interest, answers_str=answers_str)
-    return summary
+    
+    try:
+        # Use invoke instead of run
+        response = llm.invoke(prompt.format(initial_interest=initial_interest, answers_str=answers_str))
+        summary = response.content if hasattr(response, 'content') else str(response)
+        return summary.strip()
+    except Exception as e:
+        print(f"Error generating profile summary: {e}")
+        return initial_interest  # Fallback to original interest
 
 
 def get_personalized_news(profile_summary: str, target_language: str) -> list[dict]:
@@ -98,23 +116,36 @@ def get_personalized_news(profile_summary: str, target_language: str) -> list[di
         input_variables=["profile_summary"],
         template="""Based on this user profile: "{profile_summary}",
         generate 3 diverse and specific keywords or short phrases for a news search.
-        Return the keywords as a Python list of strings.
+        Return ONLY a JSON array of strings.
 
         Example: ["Nvidia AI developments", "latest generative AI research", "Google AI product launches in Europe"]
+
+        Do not include any other text or explanation.
 
         KEYWORDS:
         """
     )
-    query_chain = LLMChain(llm=llm, prompt=query_gen_prompt)
-    queries_str = query_chain.run(profile_summary)
     
     try:
-        queries = eval(queries_str)
-        if not isinstance(queries, list):
-             queries = [profile_summary]
-    except Exception:
-        queries = [profile_summary]
+        # Use invoke instead of run
+        response = llm.invoke(query_gen_prompt.format(profile_summary=profile_summary))
+        queries_str = response.content if hasattr(response, 'content') else str(response)
+        
+        # Try to extract JSON array from response
+        json_match = re.search(r'\[.*?\]', queries_str, re.DOTALL)
+        if json_match:
+            queries = json.loads(json_match.group())
+            if isinstance(queries, list) and all(isinstance(q, str) for q in queries):
+                pass  # queries is valid
+            else:
+                raise ValueError("Invalid query format")
+        else:
+            raise ValueError("No JSON array found in response")
+    except Exception as e:
+        print(f"Error generating search queries: {e}")
+        queries = [profile_summary]  # Fallback to profile summary
 
+    # Ensure we have the profile summary as a fallback query
     if profile_summary not in queries:
         queries.append(profile_summary)
 
@@ -122,24 +153,27 @@ def get_personalized_news(profile_summary: str, target_language: str) -> list[di
     seen_urls = set()
 
     try:
-        search = GoogleSerperAPIWrapper(tbm="nws", serper_api_key=SERPER_API_KEY, num=5)
+        # Initialize search with proper parameters
+        search = GoogleSerperAPIWrapper(
+            type="news", 
+            serper_api_key=SERPER_API_KEY, 
+            k=5  # Use k instead of num for newer versions
+        )
     except Exception as e:
         print(f"Failed to initialize GoogleSerperAPIWrapper: {e}")
         return []
 
-    for query in queries[:4]:
+    for query in queries[:4]:  # Limit to 4 queries to avoid rate limits
         print(f"Searching for news with query: '{query}'")
         try:
             results = search.results(query)
-            # The print statement below is for debugging and can be removed later
-            # print("Serper API Response:", results)
-
-            # FIXED: Serper News API uses the "news" key, not "news_results".
+            
             if "news" in results and results["news"]:
                 for article in results["news"]:
-                    if article.get("link") and article["link"] not in seen_urls:
+                    link = article.get("link", "")
+                    if link and link not in seen_urls:
                         all_articles.append(article)
-                        seen_urls.add(article["link"])
+                        seen_urls.add(link)
             else:
                 print(f"No news found in API response for query: '{query}'")
 
@@ -164,23 +198,36 @@ def get_personalized_news(profile_summary: str, target_language: str) -> list[di
         SUMMARY:
         """
     )
-    summarization_chain = LLMChain(llm=llm, prompt=summarization_prompt)
 
-    # Process up to 4 unique articles
-    for article in all_articles[:4]:
+    for article in all_articles:
         description = article.get("snippet", article.get("title", ""))
 
         if not description or description.strip() == "" or "[Removed]" in description:
             continue
 
-        summary = summarization_chain.run(article_description=description, target_language=target_language)
-        news_items.append({
-            "title": article.get("title", "No Title"),
-            "link": article.get("link", "#"),
-            "source": article.get("source", "Unknown"),
-            "summary": summary,
-            "snippet": description
-        })
+        try:
+            # Use invoke instead of run
+            response = llm.invoke(summarization_prompt.format(
+                article_description=description, 
+                target_language=target_language
+            ))
+            summary = response.content if hasattr(response, 'content') else str(response)
+            
+            news_items.append({
+                "title": article.get("title", "No Title"),
+                "link": article.get("link", "#"),
+                "source": article.get("source", "Unknown"),
+                "summary": summary.strip(),
+                "snippet": description
+            })
+            
+            # Stop once we have 4 successfully summarized articles
+            if len(news_items) >= 4:
+                break
+                
+        except Exception as e:
+            print(f"Error summarizing article: {e}")
+            continue
 
     return news_items
 
@@ -189,27 +236,78 @@ def query_news_feed(question: str, news_articles: list[dict], target_language: s
     if not news_articles:
         return "The news feed hasn't been generated yet. Please generate the news first."
 
-    documents = [
-        Document(
-            page_content=f"Title: {article['title']}\nSummary: {article['summary']}",
-            metadata={"source": article['source'], "link": article['link']}
-        ) for article in news_articles
-    ]
+    try:
+        # Create documents from news articles
+        documents = [
+            Document(
+                page_content=f"Title: {article['title']}\nSummary: {article['summary']}",
+                metadata={"source": article['source'], "link": article['link']}
+            ) for article in news_articles
+        ]
 
-    vector_store = Chroma.from_documents(documents, embeddings)
-    qa_chain = RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=vector_store.as_retriever()
-    )
+        # Create vector store with specific configuration to avoid tenant issues
+        vector_store = Chroma.from_documents(
+            documents, 
+            embeddings,
+            collection_name=f"news_collection_{len(documents)}",  # Unique collection name
+            persist_directory=None  # Use in-memory storage
+        )
+        
+        # Adjust k based on available documents
+        max_k = min(3, len(documents))
+        retriever = vector_store.as_retriever(search_kwargs={"k": max_k})
+        
+        qa_chain = RetrievalQA.from_chain_type(
+            llm=llm,
+            chain_type="stuff",
+            retriever=retriever
+        )
 
-    prompt = f"""Based on the provided news context, answer the following question.
-    Provide the answer in the language with the ISO 639-1 code: '{target_language}'.
+        prompt = f"""Based on the provided news context, answer the following question.
+        Provide the answer in the language with the ISO 639-1 code: '{target_language}'.
+        If the information is not available in the context, say so clearly.
 
-    Question: "{question}"
+        Question: "{question}"
 
-    Answer:
-    """
+        Answer:
+        """
 
-    response = qa_chain.run(prompt)
-    return response
+        # Use invoke instead of run
+        response = qa_chain.invoke({"query": prompt})
+        answer = response.get("result", "I couldn't find relevant information in the news feed.")
+        return answer
+        
+    except Exception as e:
+        print(f"Error in query_news_feed: {e}")
+        # Fallback to simple text matching if vector search fails
+        return fallback_text_search(question, news_articles, target_language)
+
+
+def fallback_text_search(question: str, news_articles: list[dict], target_language: str) -> str:
+    """Fallback method for answering questions when vector search fails"""
+    try:
+        # Create a context string from all articles
+        context = "\n\n".join([
+            f"Article {i+1}: {article['title']}\nSummary: {article['summary']}"
+            for i, article in enumerate(news_articles)
+        ])
+        
+        prompt = f"""Based on the following news articles, answer the question.
+        Provide the answer in the language with the ISO 639-1 code: '{target_language}'.
+        If the information is not available in the articles, say so clearly.
+
+        NEWS ARTICLES:
+        {context}
+
+        Question: "{question}"
+
+        Answer:
+        """
+        
+        response = llm.invoke(prompt)
+        answer = response.content if hasattr(response, 'content') else str(response)
+        return answer.strip()
+        
+    except Exception as e:
+        print(f"Error in fallback text search: {e}")
+        return f"I encountered an error while searching for information about your question. Please try rephrasing or check if the news feed loaded correctly."
