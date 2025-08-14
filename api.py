@@ -1,6 +1,3 @@
-import nest_asyncio
-nest_asyncio.apply()
-
 import os
 import logging
 from typing import Dict, List, Optional

@@ -10,5 +10,4 @@ requests
 python-dotenv
 pydantic
 python-multipart
-nest-asyncio
 typing-extensions

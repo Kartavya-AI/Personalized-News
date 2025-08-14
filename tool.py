@@ -1,10 +1,15 @@
-import nest_asyncio
-nest_asyncio.apply()
+try:
+    import asyncio
+    loop = asyncio.get_event_loop()
+    if hasattr(loop, '_nest_patched') or 'IPython' in str(type(loop)):
+        import nest_asyncio
+        nest_asyncio.apply()
+except:
+    pass
 
 import os
 from dotenv import load_dotenv
 
-# LangChain and Google/Serper specific imports
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.prompts import PromptTemplate
 from langchain.chains.retrieval_qa.base import RetrievalQA
@@ -17,7 +22,6 @@ import json
 
 load_dotenv()
 
-# API Key loading and validation
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 
@@ -26,7 +30,6 @@ if not GOOGLE_API_KEY:
 if not SERPER_API_KEY:
     raise ValueError("FATAL ERROR: SERPER_API_KEY not found in .env file.")
 
-# Initialize LLM and Embeddings
 try:
     llm = ChatGoogleGenerativeAI(
         model="gemini-1.5-pro",
