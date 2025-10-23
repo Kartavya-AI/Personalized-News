@@ -1,10 +1,10 @@
 fastapi
 uvicorn[standard]
 gunicorn
-langchain
-langchain-core
+langchain==0.1.16
+langchain-core==0.1.52
+langchain-community==0.0.38
 langchain-google-genai
-langchain-community
 chromadb
 google-search-results
 requests
