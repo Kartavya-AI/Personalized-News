@@ -3,7 +3,6 @@ uvicorn[standard]
 gunicorn
 langchain
 langchain-core
-langchain-chains
 langchain-google-genai
 langchain-community
 chromadb
